@@ -1,0 +1,33 @@
+version: "3.9"
+services:
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: notes
+      MYSQL_USER: notes
+      MYSQL_PASSWORD: notes
+    ports: ["3306:3306"]
+    volumes: [dbdata:/var/lib/mysql]
+    healthcheck:
+      test: ["CMD-SHELL","mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 5s
+  api:
+    build: .
+    env_file: [.env.example]
+    environment:
+      DB_DSN: notes:notes@tcp(db:3306)/notes?parseTime=true&multiStatements=true&charset=utf8mb4
+      APP_ENV: dev
+    ports: ["8080:8080"]
+    depends_on:
+      db: { condition: service_healthy }
+  prometheus:
+    image: prom/prometheus:latest
+    volumes: [ ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro ]
+    ports: ["9090:9090"]
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports: ["3000:3000"]
+    environment: [ GF_SECURITY_ADMIN_PASSWORD=admin ]
+    volumes: [graf:/var/lib/grafana]
+volumes: { dbdata: {}, graf: {} }
