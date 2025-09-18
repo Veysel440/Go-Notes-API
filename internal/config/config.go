@@ -21,9 +21,14 @@ type Config struct {
 	BcryptCost                int
 	RateRPS                   float64
 	RateBurst                 int
+	JWTIssuer                 string
+	JWTAudience               string
+	RateAuthRPS               float64
+	RateAuthBurst             int
+	OTELEndpoint              string
+	OTELSample                float64
 }
 
-// -------- helpers --------
 func getenv(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
@@ -65,7 +70,6 @@ func splitCSV(s string) []string {
 	return a
 }
 
-// DB_DSN verilmemişse DB_* ile MySQL DSN üretir.
 func mysqlDSNFromEnv() string {
 	if dsn := os.Getenv("DB_DSN"); dsn != "" {
 		return dsn
@@ -88,9 +92,17 @@ func Load() Config {
 		DBDsn:        mysqlDSNFromEnv(),
 		DBTimeout:    mustDur("DB_TIMEOUT", "3s"),
 
+		JWTIssuer:     getenv("JWT_ISSUER", "go-notes-api"),
+		JWTAudience:   getenv("JWT_AUDIENCE", "notes-api"),
+		RateAuthRPS:   mustFloat("RATE_AUTH_RPS", "2"),
+		RateAuthBurst: mustInt("RATE_AUTH_BURST", "5"),
+
 		JWTSecret:  []byte(getenv("JWT_SECRET", "dev-secret")),
 		JWTTTL:     mustDur("JWT_TTL", "15m"),
 		RefreshTTL: mustDur("REFRESH_TTL", "720h"),
+
+		OTELEndpoint: getenv("OTEL_ENDPOINT", ""),
+		OTELSample:   mustFloat("OTEL_SAMPLER", "0.1"),
 
 		MaxBodyBytes:     int64(mustInt("MAX_BODY_BYTES", "1048576")),
 		CorsOrigins:      splitCSV(getenv("CORS_ORIGINS", "*")),

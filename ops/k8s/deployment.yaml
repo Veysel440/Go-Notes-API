@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notes-api
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: notes-api } }
+  template:
+    metadata:
+      labels: { app: notes-api }
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/veysel440/go-notes-api:latest
+          ports: [{ containerPort: 8080 }]
+          env:
+            - name: APP_ENV
+              value: prod
+            - name: APP_PORT
+              value: "8080"
+            - name: DB_DSN
+              valueFrom:
+                secretKeyRef: { name: mysql-dsn, key: dsn }
+            - name: JWT_KEYS
+              valueFrom:
+                secretKeyRef: { name: jwt-keys, key: keys }
+            - name: JWT_CURRENT_KID
+              value: key1
+            - name: JWT_ISSUER
+              value: go-notes-api
+            - name: JWT_AUDIENCE
+              value: notes-api
+            - name: METRICS_ALLOW
+              value: "10.0.0.0/8"
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10

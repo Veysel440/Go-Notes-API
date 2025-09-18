@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Veysel440/go-notes-api/internal/config"
 	"github.com/Veysel440/go-notes-api/internal/jwtauth"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -20,8 +21,11 @@ func UserID(ctx context.Context) (int64, bool) {
 	return id, ok
 }
 
-func Auth() func(http.Handler) http.Handler {
+func AuthWith(cfg config.Config) func(http.Handler) http.Handler {
 	keys := jwtauth.Load()
+	expIss := cfg.JWTIssuer
+	expAud := cfg.JWTAudience
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h := r.Header.Get("Authorization")
@@ -40,7 +44,7 @@ func Auth() func(http.Handler) http.Handler {
 					return k, nil
 				}
 				return nil, jwt.ErrTokenMalformed
-			})
+			}, jwt.WithAudience(expAud), jwt.WithIssuer(expIss))
 			if err != nil || !tok.Valid {
 				http.Error(w, "unauthorized", 401)
 				return

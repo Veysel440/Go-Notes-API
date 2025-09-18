@@ -36,8 +36,44 @@ func (r RefreshTokens) Use(ctx context.Context, token string) (int64, bool, erro
 		return 0, false, err
 	}
 	if reused {
-	
+
 		_, _ = tx.ExecContext(ctx, `DELETE FROM refresh_tokens WHERE user_id=? AND expires_at>NOW()`, uid)
 	}
 	return uid, reused, tx.Commit()
+}
+
+func (r RefreshTokens) UseAndRotate(ctx context.Context, token string, newExp time.Time) (uid int64, newTok string, reused bool, err error) {
+	tx, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, "", false, err
+	}
+
+	var usedAt sql.NullTime
+	if err := tx.QueryRowContext(ctx, `SELECT user_id, used_at FROM refresh_tokens WHERE token=? AND expires_at>NOW() FOR UPDATE`, token).
+		Scan(&uid, &usedAt); err != nil {
+		_ = tx.Rollback()
+		return 0, "", false, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `UPDATE refresh_tokens SET used_at=NOW() WHERE token=?`, token); err != nil {
+		_ = tx.Rollback()
+		return 0, "", false, err
+	}
+
+	if usedAt.Valid {
+		_, _ = tx.ExecContext(ctx, `DELETE FROM refresh_tokens WHERE user_id=? AND expires_at>NOW()`, uid)
+		if err := tx.Commit(); err != nil {
+			return 0, "", true, err
+		}
+		return uid, "", true, nil
+	}
+
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	newTok = hex.EncodeToString(b)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO refresh_tokens(token,user_id,expires_at,used_at) VALUES(?,?,?,NULL)`, newTok, uid, newExp); err != nil {
+		_ = tx.Rollback()
+		return 0, "", false, err
+	}
+	return uid, newTok, false, tx.Commit()
 }

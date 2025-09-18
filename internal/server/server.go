@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"log/slog"
 	"net/http"
@@ -13,9 +14,12 @@ import (
 	"github.com/Veysel440/go-notes-api/internal/middleware"
 	"github.com/Veysel440/go-notes-api/internal/openapi"
 	"github.com/Veysel440/go-notes-api/internal/repos"
+	otelsetup "github.com/Veysel440/go-notes-api/internal/trace"
 
 	"github.com/go-chi/chi/v5"
+
 	chimw "github.com/go-chi/chi/v5/middleware"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"golang.org/x/time/rate"
 )
 
@@ -27,6 +31,8 @@ type Server struct {
 }
 
 func New(cfg config.Config, db *sql.DB) *Server {
+	_, _ = otelsetup.Setup(context.Background(), cfg.OTELEndpoint, cfg.OTELSample, "go-notes-api")
+
 	return &Server{
 		cfg: cfg,
 		db:  db,
@@ -41,6 +47,7 @@ func (s *Server) router() http.Handler {
 	rl := middleware.NewLimiter(rate.Limit(s.cfg.RateRPS), s.cfg.RateBurst, 5*time.Minute)
 
 	r.Use(
+		otelhttp.NewMiddleware("notes-api"),
 		middleware.RequestID,
 		chimw.RealIP,
 		middleware.SecurityHeaders,
@@ -80,20 +87,16 @@ func (s *Server) router() http.Handler {
 		EmailLimiter: emailLimiter,
 		Metrics:      amx,
 	}
-	r.Post("/auth/register", au.Register)
-	r.Post("/auth/login", au.Login)
-	r.Post("/auth/refresh", au.Refresh)
-
-	r.Group(func(ar chi.Router) {
-		ar.Use(middleware.Auth(), middleware.RequireRole(rolesRepo, "admin"))
-		ar.Get("/admin/ping", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"ok":true}`))
-		})
+	r.Route("/auth", func(ar chi.Router) {
+		authLimiter := middleware.NewLimiter(rate.Limit(s.cfg.RateAuthRPS), s.cfg.RateAuthBurst, 5*time.Minute)
+		ar.Use(authLimiter.Middleware)
+		ar.Post("/register", au.Register)
+		ar.Post("/login", au.Login)
+		ar.Post("/refresh", au.Refresh)
 	})
 
 	r.Group(func(ar chi.Router) {
-		ar.Use(middleware.Auth(), middleware.RequireRole(rolesRepo, "admin"))
+		ar.Use(middleware.AuthWith(s.cfg), middleware.RequireRole(rolesRepo, "admin"))
 
 		ar.Get("/admin/ping", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -107,16 +110,17 @@ func (s *Server) router() http.Handler {
 		ar.Post("/admin/users/{id}/roles", aroles.Post)
 
 		aa := handlers.AdminAudit{Cfg: s.cfg, Audit: &repos.Audit{DB: s.db}}
-		ar.Get("/admin/audit", aa.List) // ?from=RFC3339&to=RFC3339&limit=100&format=csv|json
+		ar.Get("/admin/audit", aa.List)
 	})
-
-	nt := handlers.Notes{Repo: &repos.Notes{DB: s.db}}
+	
+	nt := handlers.Notes{Repo: &repos.Notes{DB: s.db, Mx: s.mx}}
 	r.Route("/notes", func(pr chi.Router) {
-		pr.Use(middleware.Auth(), middleware.RequireRole(rolesRepo, "user"))
+		pr.Use(middleware.AuthWith(s.cfg), middleware.RequireRole(rolesRepo, "user"))
 		nt.Routes(pr)
 	})
 
 	return r
+
 }
 
 func (s *Server) HTTPServer() *http.Server {
@@ -126,4 +130,5 @@ func (s *Server) HTTPServer() *http.Server {
 		ReadTimeout:  s.cfg.ReadTimeout,
 		WriteTimeout: s.cfg.WriteTimeout,
 	}
+
 }
