@@ -7,12 +7,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Veysel440/go-notes-api/internal/config"
 	"github.com/Veysel440/go-notes-api/internal/jwtauth"
 	"github.com/Veysel440/go-notes-api/internal/repos"
+	"github.com/Veysel440/go-notes-api/internal/security"
 	"github.com/go-playground/validator/v10"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
@@ -76,12 +78,19 @@ func (h Auth) Register(w http.ResponseWriter, r *http.Request) {
 
 func (h Auth) Login(w http.ResponseWriter, r *http.Request) {
 	var in creds
+
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		http.Error(w, "bad json", 400)
 		return
 	}
 	if h.EmailLimiter != nil && !h.EmailLimiter(in.Email) {
 		http.Error(w, "rate limit", 429)
+		return
+	}
+	br := security.Brute{RDB: h.BruteRedis, Limit: 10, Window: 5 * time.Minute}
+	if ok, _, ttl := br.Allow(r.Context(), r, in.Email); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(ttl.Seconds())))
+		apperr.Write(w, r, apperr.TooMany)
 		return
 	}
 

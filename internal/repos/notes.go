@@ -39,7 +39,7 @@ func sanitizeSort(s string) string {
 	case "updated":
 		return "updated_at DESC"
 	default:
-		return "id DESC" // newest
+		return "id DESC"
 	}
 }
 
@@ -95,6 +95,7 @@ func (r *Notes) ListFiltered(ctx context.Context, uid int64, page, size int, q, 
 func (r *Notes) Create(ctx context.Context, uid int64, title, body string) (int64, error) {
 	start := time.Now()
 	defer r.observe("notes_create", start)
+
 	res, err := r.DB.ExecContext(ctx, `INSERT INTO notes(user_id,title,body) VALUES(?,?,?)`, uid, title, body)
 	if err != nil {
 		return 0, err
@@ -106,26 +107,37 @@ func (r *Notes) Create(ctx context.Context, uid int64, title, body string) (int6
 func (r *Notes) Get(ctx context.Context, uid, id int64) (Note, error) {
 	start := time.Now()
 	defer r.observe("notes_get", start)
+
 	var n Note
 	err := r.DB.QueryRowContext(ctx, `
 		SELECT id,user_id,title,body,created_at,updated_at,deleted_at
 		FROM notes WHERE id=? AND user_id=? AND deleted_at IS NULL`,
-		id, uid).Scan(&n.ID, &n.UserID, &n.Title, &n.Body, &n.CreatedAt, &n.UpdatedAt, &n.DeletedAt)
+		id, uid).
+		Scan(&n.ID, &n.UserID, &n.Title, &n.Body, &n.CreatedAt, &n.UpdatedAt, &n.DeletedAt)
 	return n, err
 }
 
-func (r *Notes) Update(ctx context.Context, uid, id int64, title, body string) error {
+func (r *Notes) Update(ctx context.Context, uid, id int64, title, body string) (Note, error) {
 	start := time.Now()
 	defer r.observe("notes_update", start)
+
 	_, err := r.DB.ExecContext(ctx, `UPDATE notes SET title=?, body=? WHERE id=? AND user_id=? AND deleted_at IS NULL`,
 		title, body, id, uid)
-	return err
+	if err != nil {
+		return Note{}, err
+	}
+	return r.Get(ctx, uid, id)
 }
 
-func (r *Notes) Delete(ctx context.Context, uid, id int64) error {
+func (r *Notes) Delete(ctx context.Context, uid, id int64) (Note, error) {
 	start := time.Now()
 	defer r.observe("notes_delete", start)
-	_, err := r.DB.ExecContext(ctx, `UPDATE notes SET deleted_at=NOW() WHERE id=? AND user_id=? AND deleted_at IS NULL`,
+
+	n, err := r.Get(ctx, uid, id)
+	if err != nil {
+		return Note{}, err
+	}
+	_, err = r.DB.ExecContext(ctx, `UPDATE notes SET deleted_at=NOW() WHERE id=? AND user_id=? AND deleted_at IS NULL`,
 		id, uid)
-	return err
+	return n, err
 }
