@@ -27,6 +27,12 @@ type Config struct {
 	RateAuthBurst             int
 	OTELEndpoint              string
 	OTELSample                float64
+	RedisAddr                 string
+	RedisPass                 string
+	RedisDB                   int
+	RedisTLS                  bool
+	JTIPrefix                 string
+	RateAllowCIDR             string
 }
 
 func getenv(k, def string) string {
@@ -103,6 +109,14 @@ func Load() Config {
 
 		OTELEndpoint: getenv("OTEL_ENDPOINT", ""),
 		OTELSample:   mustFloat("OTEL_SAMPLER", "0.1"),
+
+		RedisAddr: getenv("REDIS_ADDR", "127.0.0.1:6379"),
+		RedisPass: getenv("REDIS_PASSWORD", ""),
+		RedisDB:   mustInt("REDIS_DB", "0"),
+		RedisTLS:  getenv("REDIS_TLS", "false") == "true",
+		JTIPrefix: getenv("JWT_JTI_PREFIX", "jti:"),
+
+		RateAllowCIDR: getenv("RATE_ALLOW_CIDR", ""),
 
 		MaxBodyBytes:     int64(mustInt("MAX_BODY_BYTES", "1048576")),
 		CorsOrigins:      splitCSV(getenv("CORS_ORIGINS", "*")),

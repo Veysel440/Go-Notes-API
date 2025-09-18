@@ -43,3 +43,5 @@ sbom:
 
 k6:
 	docker run --rm -e BASE_URL=http://host.docker.internal:8080 -i -v $$PWD/tests/load:/scripts grafana/k6:0.51.0 run /scripts/smoke.js
+openapi:
+	npx -y @stoplight/spectral-cli lint openapi/openapi.yaml --fail-severity=error

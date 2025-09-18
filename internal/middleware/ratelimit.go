@@ -12,7 +12,7 @@ import (
 type Limiter struct {
 	r   rate.Limit
 	b   int
-	m   sync.Map // key -> *rate.Limiter
+	m   sync.Map
 	ttl time.Duration
 }
 

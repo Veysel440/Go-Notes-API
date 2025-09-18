@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Veysel440/go-notes-api/internal/config"
@@ -15,6 +16,8 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
+
+	apperr "github.com/Veysel440/go-notes-api/internal/errors"
 )
 
 type Auth struct {
@@ -24,6 +27,9 @@ type Auth struct {
 	Roles        *repos.Roles
 	EmailLimiter func(string) bool
 	Metrics      *repos.AuthMetrics
+	JTIStore     interface {
+		Revoke(ctx context.Context, jti string, ttl time.Duration) error
+	}
 }
 
 type creds struct {
@@ -154,4 +160,51 @@ func (h Auth) Refresh(w http.ResponseWriter, r *http.Request) {
 	access, _ := t.SignedString(keys.Set[keys.Current])
 
 	_ = json.NewEncoder(w).Encode(map[string]any{"access": access, "refresh": newRT})
+}
+
+func (h Auth) Logout(w http.ResponseWriter, r *http.Request) {
+	hdr := r.Header.Get("Authorization")
+	if !strings.HasPrefix(hdr, "Bearer ") {
+		apperr.Write(w, r, apperr.Unauthorized)
+		return
+	}
+	raw := strings.TrimPrefix(hdr, "Bearer ")
+
+	keys := jwtauth.Load()
+	tok, err := jwt.Parse(raw, func(t *jwt.Token) (interface{}, error) {
+		if kid, _ := t.Header["kid"].(string); kid != "" {
+			if k, ok := keys.Set[kid]; ok {
+				return k, nil
+			}
+		}
+		for _, k := range keys.Set {
+			return k, nil
+		}
+		return nil, jwt.ErrTokenMalformed
+	})
+	if err != nil || !tok.Valid {
+		apperr.Write(w, r, apperr.Unauthorized)
+		return
+	}
+
+	claims, _ := tok.Claims.(jwt.MapClaims)
+	jti, _ := claims["jti"].(string)
+	exp, _ := claims["exp"].(float64)
+	ttl := time.Until(time.Unix(int64(exp), 0))
+	if ttl < 0 {
+		ttl = 0
+	}
+	if h.JTIStore != nil && jti != "" {
+		_ = h.JTIStore.Revoke(r.Context(), jti, ttl)
+	}
+
+	var in struct {
+		Refresh string `json:"refresh"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&in)
+	if in.Refresh != "" {
+		_ = h.Tokens.Revoke(r.Context(), in.Refresh)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

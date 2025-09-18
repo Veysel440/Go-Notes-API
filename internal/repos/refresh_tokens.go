@@ -77,3 +77,8 @@ func (r RefreshTokens) UseAndRotate(ctx context.Context, token string, newExp ti
 	}
 	return uid, newTok, false, tx.Commit()
 }
+
+func (r RefreshTokens) Revoke(ctx context.Context, token string) error {
+	_, err := r.DB.ExecContext(ctx, `DELETE FROM refresh_tokens WHERE token=?`, token)
+	return err
+}
