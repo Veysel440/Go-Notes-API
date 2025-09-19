@@ -1,105 +1,127 @@
 name: ci
-
 on:
-  push:
-    branches: ["main"]
-    tags: ["v*"]
-  pull_request:
-    branches: ["main"]
+  push: { branches: ["main"], tags: ["v*"] }
+  pull_request: { branches: ["main"] }
 
 jobs:
-  build-test-lint:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with: { go-version: "1.22" }
+      - uses: golangci/golangci-lint-action@v6
+        with: { version: v1.60.3, args: --timeout=5m }
+      - name: Govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - name: Spectral
+        run: npx -y @stoplight/spectral-cli lint openapi/openapi.yaml --fail-severity=error
+      - name: Hadolint
+        run: docker run --rm -i hadolint/hadolint < Dockerfile
 
-      - name: Cache Go
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.22" }
+      - name: Cache modules
         uses: actions/cache@v4
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
           key: ${{ runner.os }}-gomod-${{ hashFiles('**/go.sum') }}
-
-      - name: Go mod tidy
-        run: go mod tidy
-
-      - name: OpenAPI lint (Spectral)
-        uses: actions/setup-node@v4
-        with: { node-version: "20" }
-      - run: npx -y @stoplight/spectral-cli lint openapi/openapi.yaml --fail-severity=error
-
-      - name: Build
-        run: CGO_ENABLED=0 go build -o bin/api ./cmd/api
-
-      - name: Test
-        run: go test ./... -count=1
-
-      - name: Lint
-        uses: golangci/golangci-lint-action@v6
+      - name: Unit tests
+        run: go test -race -coverprofile=coverage.out ./...
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
         with:
-          version: v1.59
-          args: --timeout=5m
+          name: coverage.out
+          path: coverage.out
 
-      - name: Govulncheck
-        uses: golang/govulncheck-action@v1
-        with:
-          go-version-input: '1.22'
-          go-package: ./...
-
-  docker:
-    needs: build-test-lint
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+  integration:
     runs-on: ubuntu-latest
-    permissions: { contents: read, packages: write }
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: notes_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -proot"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+    env:
+      DB_CONNECTION: mysql
+      DB_HOST: 127.0.0.1
+      DB_PORT: "3306"
+      DB_DATABASE: notes_test
+      DB_USERNAME: root
+      DB_PASSWORD: root
+      REDIS_ADDR: 127.0.0.1:6379
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.22" }
+      - name: Wait for MySQL
+        run: |
+          for i in {1..60}; do
+            mysql -h 127.0.0.1 -uroot -proot -e "SELECT 1" && break || sleep 2
+          done
+      - name: Migrate
+        run: make migrate-up DB_USERNAME=root DB_PASSWORD=root DB_HOST=127.0.0.1 DB_PORT=3306 DB_DATABASE=notes_test
+      - name: Integration tests
+        run: go test -race -tags=integration ./tests/integration/...
 
-      - name: Extract metadata
+  build:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: |
+            ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
             type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag
-
-      - name: Primary tag to env
-        run: echo "PRIMARY_TAG=$(echo '${{ steps.meta.outputs.json }}' | jq -r '.tags[0]')" >> $GITHUB_ENV
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
       - name: Login GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
+          push: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref,'refs/tags/v') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull image
+        run: docker pull ghcr.io/${{ github.repository }}:latest
+      - name: SBOM (Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository }}:latest
+          format: spdx-json
+          artifact-name: sbom.spdx.json
       - name: Trivy scan
         uses: aquasecurity/trivy-action@0.24.0
         with:
-          image-ref: ${{ env.PRIMARY_TAG }}
+          image-ref: ghcr.io/${{ github.repository }}:latest
           format: table
-          severity: CRITICAL,HIGH
+          exit-code: '1'
           ignore-unfixed: true
-
-      - name: SBOM (syft)
-        uses: anchore/sbom-action@v0
-        with:
-          image: ${{ env.PRIMARY_TAG }}
-          artifact-name: sbom.spdx.json

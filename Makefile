@@ -1,30 +1,23 @@
-APP ?= go-notes-api
-REG ?= ghcr.io
-REPO ?= $(shell git config --get remote.origin.url | sed -E 's#.*github.com[:/](.*)\.git#\1#')
-TAG ?= latest
+APP=go-notes-api
+MIGRATE_IMG=migrate/migrate:4
+MIGRATE_DSN?=mysql://$(DB_USERNAME):$(DB_PASSWORD)@tcp($(DB_HOST):$(DB_PORT))/$(DB_DATABASE)?multiStatements=true
 
-.PHONY: dev run test lint build tidy vuln docker-up docker-down docker-build docker-push sbom k6
+.PHONY: dev run test lint vuln build docker-up docker-down k6 spectral sbom hadolint migrate-up migrate-down
 
-dev:
-	air
-
-run:
-	go run ./cmd/api
+dev: ; air
+run: ; go run ./cmd/api
 
 test:
-	go test ./... -count=1
+	go test -race -coverprofile=coverage.out ./...
 
 lint:
 	golangci-lint run
 
-tidy:
-	go mod tidy
-
 vuln:
-	govulncheck ./...
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 build:
-	CGO_ENABLED=0 go build -o bin/$(APP) ./cmd/api
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/$(APP) ./cmd/api
 
 docker-up:
 	docker compose up -d --build
@@ -32,16 +25,23 @@ docker-up:
 docker-down:
 	docker compose down -v
 
-docker-build:
-	docker build -t $(APP):$(TAG) .
-
-docker-push:
-	docker buildx build --platform linux/amd64,linux/arm64 -t $(REG)/$(REPO):$(TAG) --push .
-
-sbom:
-	syft packages docker:$(APP):$(TAG) -o spdx-json > sbom.spdx.json
-
 k6:
 	docker run --rm -e BASE_URL=http://host.docker.internal:8080 -i -v $$PWD/tests/load:/scripts grafana/k6:0.51.0 run /scripts/smoke.js
-openapi:
+
+spectral:
 	npx -y @stoplight/spectral-cli lint openapi/openapi.yaml --fail-severity=error
+
+sbom:
+	docker build -t $(APP):local .
+	docker run --rm -v $$PWD:/out anchore/syft:latest $(APP):local -o spdx-json=/out/sbom.spdx.json
+
+hadolint:
+	docker run --rm -i hadolint/hadolint < Dockerfile
+
+migrate-up:
+	docker run --rm -v $$PWD/migrations:/migrations --network host $(MIGRATE_IMG) \
+	  -path=/migrations -database '$(MIGRATE_DSN)' up
+
+migrate-down:
+	docker run --rm -v $$PWD/migrations:/migrations --network host $(MIGRATE_IMG) \
+	  -path=/migrations -database '$(MIGRATE_DSN)' down 1
