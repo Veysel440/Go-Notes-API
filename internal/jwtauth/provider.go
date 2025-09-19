@@ -7,7 +7,7 @@ type KeyProvider interface {
 
 type EnvProvider struct {
 	Current string
-	Set     map[string][]byte // kid->secret
+	Set     map[string][]byte
 }
 
 func (e EnvProvider) CurrentKID() string                  { return e.Current }

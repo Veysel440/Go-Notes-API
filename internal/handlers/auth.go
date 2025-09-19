@@ -6,20 +6,22 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Veysel440/go-notes-api/internal/config"
+	apperr "github.com/Veysel440/go-notes-api/internal/errors"
 	"github.com/Veysel440/go-notes-api/internal/jwtauth"
 	"github.com/Veysel440/go-notes-api/internal/repos"
 	"github.com/Veysel440/go-notes-api/internal/security"
+
 	"github.com/go-playground/validator/v10"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
-
-	apperr "github.com/Veysel440/go-notes-api/internal/errors"
 )
 
 type Auth struct {
@@ -32,6 +34,7 @@ type Auth struct {
 	JTIStore     interface {
 		Revoke(ctx context.Context, jti string, ttl time.Duration) error
 	}
+	BruteRedis *redis.Client
 }
 
 type creds struct {
@@ -46,7 +49,7 @@ func randID() string { var b [16]byte; _, _ = rand.Read(b[:]); return hex.Encode
 func (h Auth) Register(w http.ResponseWriter, r *http.Request) {
 	var in creds
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "bad json", 400)
+		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
 	var v struct {
@@ -55,7 +58,7 @@ func (h Auth) Register(w http.ResponseWriter, r *http.Request) {
 	}
 	v.Email, v.Password = in.Email, in.Password
 	if err := validate.Struct(v); err != nil {
-		http.Error(w, "invalid", 422)
+		http.Error(w, "invalid", http.StatusUnprocessableEntity)
 		return
 	}
 
@@ -66,7 +69,7 @@ func (h Auth) Register(w http.ResponseWriter, r *http.Request) {
 
 	id, err := h.Users.Create(ctx, in.Email, string(hash))
 	if err != nil {
-		http.Error(w, "conflict", 409)
+		http.Error(w, "conflict", http.StatusConflict)
 		return
 	}
 	if h.Roles != nil {
@@ -78,13 +81,12 @@ func (h Auth) Register(w http.ResponseWriter, r *http.Request) {
 
 func (h Auth) Login(w http.ResponseWriter, r *http.Request) {
 	var in creds
-
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "bad json", 400)
+		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
 	if h.EmailLimiter != nil && !h.EmailLimiter(in.Email) {
-		http.Error(w, "rate limit", 429)
+		http.Error(w, "rate limit", http.StatusTooManyRequests)
 		return
 	}
 	br := security.Brute{RDB: h.BruteRedis, Limit: 10, Window: 5 * time.Minute}
@@ -103,11 +105,10 @@ func (h Auth) Login(w http.ResponseWriter, r *http.Request) {
 			h.Metrics.Failed.Inc()
 		}
 		time.Sleep(250 * time.Millisecond)
-		http.Error(w, "unauthorized", 401)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	keys := jwtauth.Load()
 	claims := jwt.MapClaims{
 		"sub": u.ID,
 		"exp": time.Now().Add(h.Cfg.JWTTTL).Unix(),
@@ -117,12 +118,14 @@ func (h Auth) Login(w http.ResponseWriter, r *http.Request) {
 		"jti": randID(),
 	}
 	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	t.Header["kid"] = keys.Current
-	access, _ := t.SignedString(keys.Set[keys.Current])
+	kid := jwtauth.CurrentKID()
+	sec, _ := jwtauth.Secret(kid)
+	t.Header["kid"] = kid
+	access, _ := t.SignedString(sec)
 
 	rt, err := h.Tokens.Issue(ctx, u.ID, time.Now().Add(h.Cfg.RefreshTTL))
 	if err != nil {
-		http.Error(w, "server", 500)
+		http.Error(w, "server", http.StatusInternalServerError)
 		return
 	}
 
@@ -134,7 +137,7 @@ func (h Auth) Refresh(w http.ResponseWriter, r *http.Request) {
 		Refresh string `json:"refresh"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "bad json", 400)
+		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
 
@@ -143,19 +146,18 @@ func (h Auth) Refresh(w http.ResponseWriter, r *http.Request) {
 
 	uid, newRT, reused, err := h.Tokens.UseAndRotate(ctx, in.Refresh, time.Now().Add(h.Cfg.RefreshTTL))
 	if err != nil {
-		if err == sql.ErrNoRows {
-			http.Error(w, "invalid", 401)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "invalid", http.StatusUnauthorized)
 			return
 		}
-		http.Error(w, "server", 500)
+		http.Error(w, "server", http.StatusInternalServerError)
 		return
 	}
 	if reused {
-		http.Error(w, "token_reused_detected", 401)
+		http.Error(w, "token_reused_detected", http.StatusUnauthorized)
 		return
 	}
 
-	keys := jwtauth.Load()
 	claims := jwt.MapClaims{
 		"sub": uid,
 		"exp": time.Now().Add(h.Cfg.JWTTTL).Unix(),
@@ -165,8 +167,10 @@ func (h Auth) Refresh(w http.ResponseWriter, r *http.Request) {
 		"jti": randID(),
 	}
 	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	t.Header["kid"] = keys.Current
-	access, _ := t.SignedString(keys.Set[keys.Current])
+	kid := jwtauth.CurrentKID()
+	sec, _ := jwtauth.Secret(kid)
+	t.Header["kid"] = kid
+	access, _ := t.SignedString(sec)
 
 	_ = json.NewEncoder(w).Encode(map[string]any{"access": access, "refresh": newRT})
 }
@@ -179,18 +183,18 @@ func (h Auth) Logout(w http.ResponseWriter, r *http.Request) {
 	}
 	raw := strings.TrimPrefix(hdr, "Bearer ")
 
-	keys := jwtauth.Load()
-	tok, err := jwt.Parse(raw, func(t *jwt.Token) (interface{}, error) {
+	keyFn := func(t *jwt.Token) (interface{}, error) {
 		if kid, _ := t.Header["kid"].(string); kid != "" {
-			if k, ok := keys.Set[kid]; ok {
-				return k, nil
+			if sec, ok := jwtauth.Secret(kid); ok {
+				return sec, nil
 			}
 		}
-		for _, k := range keys.Set {
-			return k, nil
+		if sec, ok := jwtauth.Secret(jwtauth.CurrentKID()); ok {
+			return sec, nil
 		}
 		return nil, jwt.ErrTokenMalformed
-	})
+	}
+	tok, err := jwt.Parse(raw, keyFn)
 	if err != nil || !tok.Valid {
 		apperr.Write(w, r, apperr.Unauthorized)
 		return
@@ -214,6 +218,5 @@ func (h Auth) Logout(w http.ResponseWriter, r *http.Request) {
 	if in.Refresh != "" {
 		_ = h.Tokens.Revoke(r.Context(), in.Refresh)
 	}
-
 	w.WriteHeader(http.StatusNoContent)
 }

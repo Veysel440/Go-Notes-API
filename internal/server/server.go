@@ -95,6 +95,7 @@ func (s *Server) router() http.Handler {
 		EmailLimiter: emailLimiter,
 		Metrics:      amx,
 		JTIStore:     s.jtis,
+		BruteRedis:   s.rdb,
 	}
 	r.Route("/auth", func(ar chi.Router) {
 		if s.rdb != nil {
