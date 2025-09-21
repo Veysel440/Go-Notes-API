@@ -1,0 +1,79 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/veysel440/go-notes-api
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  hosts: []
+  tls: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+env:
+  APP_ENV: "prod"
+  APP_PORT: "8080"
+  APP_READ_TIMEOUT: "5s"
+  APP_WRITE_TIMEOUT: "10s"
+  DB_CONNECTION: "mysql"
+  DB_HOST: "mysql"
+  DB_PORT: "3306"
+  DB_DATABASE: "go-notes"
+  DB_TIMEOUT: "3s"
+  MAX_BODY_BYTES: "1048576"
+  CORS_ORIGINS: "http://localhost:5173,http://localhost:3000"
+  METRICS_ALLOW: "0.0.0.0/0"
+  BCRYPT_COST: "12"
+  RATE_RPS: "10"
+  RATE_BURST: "10"
+  RATE_AUTH_RPS: "2"
+  RATE_AUTH_BURST: "5"
+  JWT_ISSUER: "go-notes-api"
+  JWT_AUDIENCE: "notes-api"
+  OTEL_ENDPOINT: "http://otel-collector:4318"
+  OTEL_SAMPLER: "0.2"
+  REDIS_ADDR: "redis:6379"
+  JTI_PREFIX: "jti:"
+
+
+secrets:
+  enabled: true
+  name: notes-secrets
+  data:
+    DB_USERNAME: "root"
+    DB_PASSWORD: "change-me"
+    JWT_KEYS: "key1:change-me-please"
+    JWT_CURRENT_KID: "key1"
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  cpu:
+    enabled: true
+    averageUtilization: 70
+  memory:
+    enabled: false
+    averageUtilization: 75
+
+pdb:
+  enabled: true
+  maxUnavailable: 1

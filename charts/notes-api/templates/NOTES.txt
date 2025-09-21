@@ -1,0 +1,4 @@
+Uygulama: {{ include "notes.fullname" . }}
+Service:  {{ include "notes.fullname" . }}-svc:{{ .Values.service.port }}
+HPA:      {{ if .Values.hpa.enabled }}enabled{{ else }}disabled{{ end }}
+PDB:      {{ if .Values.pdb.enabled }}enabled{{ else }}disabled{{ end }}

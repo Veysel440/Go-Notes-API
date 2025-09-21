@@ -1,0 +1,10 @@
+{{- if .Values.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "notes.fullname" . }}-pdb
+spec:
+  selector:
+    matchLabels: { app: {{ include "notes.fullname" . }} }
+  maxUnavailable: {{ .Values.pdb.maxUnavailable }}
+{{- end }}
